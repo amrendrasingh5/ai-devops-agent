@@ -1,11 +1,22 @@
-from planner import Agent
+import sys
+
+from agent.agent import DevOpsAgent
 
 
-agent = Agent("demo-repo")
+def main():
+    if len(sys.argv) < 2:
+        print('Usage: python main.py "<pod-name>"')
+        sys.exit(1)
 
-agent.inspect_repository()
+    pod_name = sys.argv[1]
 
-results = agent.search("vpc_cidr")
+    agent = DevOpsAgent()
 
-if results:
-    agent.read(results[0])
+    agent.investigate(
+        pod_name=pod_name,
+        namespace="default",
+    )
+
+
+if __name__ == "__main__":
+    main()
