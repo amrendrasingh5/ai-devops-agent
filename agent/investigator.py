@@ -281,6 +281,7 @@ def investigate_unhealthy_pods(
 
 from agent.llm import ask_llm
 
+from rag import search_knowledge
 
 def analyze_with_llm(investigation):
     """
@@ -289,6 +290,43 @@ def analyze_with_llm(investigation):
     The LLM is read-only and receives evidence collected by our
     Kubernetes investigation tools. It does not interact with Kubernetes.
     """
+
+    retrieval_query_parts = [
+        "Kubernetes",
+        str(investigation["pod"].get("phase", "")),
+    ]
+
+    for container in investigation["pod"].get("containers", []):
+        retrieval_query_parts.extend(
+            [
+                container.get("state", ""),
+                container.get("reason", ""),
+            ]
+        )
+
+    for event in investigation.get("events", []):
+        retrieval_query_parts.append(
+            event.get("reason", "")
+    )
+
+    retrieval_query = " ".join(retrieval_query_parts)
+    
+    print(f"[AGENT] RAG query: {retrieval_query}")
+
+    knowledge = search_knowledge(retrieval_query)
+
+    print("\n[AGENT] Retrieved knowledge:")
+
+    if knowledge:
+        print(f"[AGENT] Retrieved {len(knowledge)} document(s).")
+
+        for item in knowledge:
+            print(
+                f"  - {item['file']} "
+                f"(score: {item['score']})"
+            )
+    else:
+        print("[AGENT] No relevant knowledge found.")
 
     prompt = f"""
 You are a Kubernetes troubleshooting assistant.
@@ -306,6 +344,12 @@ Your task:
 Investigation evidence:
 
 {investigation}
-"""
 
+Retrieved knowledge from the DevOps knowledge base:
+
+{chr(10).join(
+    f"Document: {item['file']} (relevance score: {item['score']})\n{item['content']}"
+    for item in knowledge
+)}
+"""
     return ask_llm(prompt)

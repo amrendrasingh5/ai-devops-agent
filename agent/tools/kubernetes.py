@@ -1,16 +1,23 @@
 from kubernetes import client, config
 
 
-def get_pods(namespace: str = "default"):
+def get_pods(namespace: str | None = None):
     """
-    Return useful health information about pods in a Kubernetes namespace.
+    Return useful health information about pods.
+
+    If namespace is provided, return pods from that namespace.
+    If namespace is None, return pods from all namespaces.
 
     This function is read-only.
     """
     config.load_kube_config()
 
     v1 = client.CoreV1Api()
-    pods = v1.list_namespaced_pod(namespace=namespace)
+
+    if namespace:
+        pods = v1.list_namespaced_pod(namespace=namespace)
+    else:
+        pods = v1.list_pod_for_all_namespaces()
 
     result = []
 
@@ -258,12 +265,16 @@ def get_pod_deployment(
                 return owner.name
 
     return None
+
 def find_pods(
-    namespace: str = "default",
+    namespace: str | None = None,
     health: str | None = None,
 ):
     """
-    Find pods in a Kubernetes namespace.
+    Find pods in Kubernetes.
+
+    If namespace is provided, search only that namespace.
+    If namespace is None, search all namespaces.
 
     Optional health filter:
         healthy
@@ -271,6 +282,7 @@ def find_pods(
 
     This function is read-only.
     """
+
     pods = get_pods(namespace)
 
     if health is None:
@@ -291,13 +303,14 @@ def find_pods(
         is_healthy = (
             pod["phase"] == "Running"
             and all(container["ready"] for container in containers)
-            and all(container["restart_count"] == 0 for container in containers)
         )
+
+        is_completed = pod["phase"] == "Succeeded"
 
         if health == "healthy" and is_healthy:
             result.append(pod)
 
-        elif health == "unhealthy" and not is_healthy:
+        elif health == "unhealthy" and not is_healthy and not is_completed:
             result.append(pod)
 
     return result
