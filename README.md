@@ -93,31 +93,60 @@ The AI is instructed to:
 
 ## Example Investigation
 
-A controlled lab failure was created using a non-existent container image:
+A controlled lab failure was created using a Kubernetes Deployment with a
+non-existent container image:
 
 ```bash
-kubectl run ai-devops-test-failing \
-  --image=nginx:this-image-does-not-exist \
-  --restart=Never
+kubectl create deployment ai-devops-test-failing \
+  --image=nginx:this-image-does-not-exist
 ```
 
-The agent detected:
+The Deployment created a ReplicaSet and Pod:
 
 ```text
-Pod status: Pending
-Container: not Ready
-Image pull failure detected
-Container logs unavailable
+Deployment
+  ↓
+ReplicaSet
+  ↓
+ai-devops-test-failing-<pod-id>
 ```
 
-It also collected Kubernetes events showing the image-pull problem.
+The agent was then asked:
 
-The resulting assessment identified the image-pull failure as the reason the pod was unhealthy.
+```text
+Hey, check why the pod is not running in the default namespace.
+```
 
-The test pod was then removed:
+Using the DevOps MCP tools, the agent:
+
+1. Discovered the unhealthy pod.
+2. Collected pod and container state.
+3. Collected Kubernetes events.
+4. Collected Deployment information.
+5. Checked whether logs were available.
+6. Searched the repository for supporting configuration.
+7. Analyzed the evidence and identified the root cause.
+8. Recommended safe remediation without modifying the cluster.
+
+The investigation identified:
+
+* Pod phase: `Pending`
+* Container state: `Waiting`
+* Container reason: `ImagePullBackOff`
+* Configured image: `nginx:this-image-does-not-exist`
+* Image pull error: `ErrImagePull`
+* Repeated Kubernetes image-pull failure events
+* A `PolicyViolation` from the cluster image-registry policy
+* No application logs because the container never started
+* Deployment: `ai-devops-test-failing`
+
+The agent distinguished confirmed evidence from assumptions and did not make
+any Kubernetes changes.
+
+The lab workload can be removed with:
 
 ```bash
-kubectl delete pod ai-devops-test-failing -n default
+kubectl delete deployment ai-devops-test-failing -n default
 ```
 
 ---

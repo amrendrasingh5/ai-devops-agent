@@ -4,6 +4,7 @@ from agent.tools.kubernetes import (
     get_pod_logs,
     get_deployment,
     get_pod_deployment,
+    get_pod_details,
     find_pods,
 )
 
@@ -38,11 +39,17 @@ def investigate_pod(
     )
 
     # 3. Get pod logs
-    logs = get_pod_logs(
-        pod_name,
-        namespace,
-    )
-
+    logs = {
+        "current": get_pod_logs(
+            pod_name,
+            namespace,
+        ),
+        "previous": get_pod_logs(
+            pod_name,
+            namespace,
+            previous=True,
+    ),
+}
 
     deployment_name = get_pod_deployment(
         pod_name,
@@ -56,17 +63,24 @@ def investigate_pod(
             deployment_name,
             namespace,
         )
+    pod_details = get_pod_details(
+        pod_name,
+        namespace,
+)
     return {
         "pod": pod,
         "events": events,
         "logs": logs,
         "deployment": deployment,
+        "pod_details": pod_details,
     }
 
 def summarize_investigation(investigation):
     """
-    Convert investigation evidence into a human-readable summary.
+    Convert investigation evidence into a human-readable evidence summary.
 
+    This function reports collected evidence only.
+    Root-cause analysis is performed by the LLM.
     This function does not modify Kubernetes resources.
     """
 
@@ -74,171 +88,216 @@ def summarize_investigation(investigation):
         return investigation["error"]
 
     pod = investigation["pod"]
-    deployment = investigation["deployment"]
-    events = investigation["events"]
-    logs = investigation["logs"]
+    deployment = investigation.get("deployment")
+    events = investigation.get("events", [])
+    logs = investigation.get("logs", {})
+    pod_details = investigation.get("pod_details")
 
-    # ---------------------------------------------------------
-    # Determine current runtime health
-    # ---------------------------------------------------------
+    status = pod.get("phase")
 
-    status = pod["phase"]
+    containers = pod.get("containers", [])
 
-    restarts = sum(
-        container["restart_count"]
-        for container in pod["containers"]
+    containers_ready = (
+        bool(containers)
+        and all(
+            container.get("ready", False)
+            for container in containers
+        )
     )
-
-    containers_ready = all(
-        container["ready"]
-        for container in pod["containers"]
-    )
-
-    healthy = (
-        status == "Running"
-        and containers_ready
-        and restarts == 0
-    )
-
-    # ---------------------------------------------------------
-    # Collect policy/configuration findings
-    # ---------------------------------------------------------
-
-    policy_findings = set()
-
-    for event in events:
-        reason = event.get("reason")
-        message = event.get("message", "").lower()
-
-        if reason != "PolicyViolation":
-            continue
-
-        if "unknown registr" in message:
-            policy_findings.add(
-                "Images from unknown registries are blocked by policy"
-            )
-
-        if "mutable image tag" in message or "latest" in message:
-            policy_findings.add(
-                "Image is using a mutable tag: latest"
-            )
-
-    # ---------------------------------------------------------
-    # Build report
-    # ---------------------------------------------------------
 
     lines = []
 
-    lines.append("Pod Investigation")
+    lines.append("Pod Investigation Evidence")
     lines.append("────────────────────────────")
-    lines.append(f"Pod: {pod['name']}")
+    lines.append(f"Pod: {pod.get('name')}")
+    lines.append(f"Namespace: {pod.get('namespace')}")
+    lines.append(f"Pod phase: {status}")
+    lines.append("")
 
-    if healthy:
-        lines.append("Current Health: HEALTHY")
+    # Container evidence
+    lines.append("Container Evidence:")
+
+    if containers:
+        for container in containers:
+            lines.append(
+                f"- Name: {container.get('name')}"
+            )
+            lines.append(
+                f"  Ready: {container.get('ready')}"
+            )
+            lines.append(
+                f"  State: {container.get('state')}"
+            )
+            lines.append(
+                f"  Reason: {container.get('reason')}"
+            )
+            lines.append(
+                f"  Restart count: "
+                f"{container.get('restart_count')}"
+            )
+            lines.append(
+                f"  Image: {container.get('image')}"
+            )
     else:
-        lines.append("Current Health: UNHEALTHY")
+        lines.append("- No container status information available.")
 
     lines.append("")
 
-    # Runtime health
-    lines.append("Current Runtime Health:")
+    # Logs
+    lines.append("Logs:")
 
-    if status == "Running":
-        lines.append("✓ Pod is Running")
+    current_logs = logs.get("current", "")
+    previous_logs = logs.get("previous", "")
+
+    if current_logs.startswith("Logs unavailable"):
+        lines.append(
+            f"- Current logs: {current_logs}"
+        )
     else:
-        lines.append(f"⚠ Pod status: {status}")
+        lines.append("- Current logs: available")
 
-    if containers_ready:
-        lines.append("✓ All containers are Ready")
+    if previous_logs.startswith("Previous logs unavailable"):
+        lines.append(
+            f"- Previous logs: {previous_logs}"
+        )
     else:
-        lines.append("⚠ One or more containers are not Ready")
+        lines.append("- Previous logs: available")
 
-    # Inspect container states
-    container_failures = []
+    lines.append("")
 
-    for container in pod["containers"]:
-        if not container["ready"]:
-            container_failures.append(
-                f"{container['name']}: not ready"
+    # Events
+    lines.append("Events:")
+
+    if events:
+        for event in events:
+            lines.append(
+                f"- Type: {event.get('type')}"
+            )
+            lines.append(
+                f"  Reason: {event.get('reason')}"
+            )
+            lines.append(
+                f"  Message: {event.get('message')}"
+            )
+            lines.append(
+                f"  Count: {event.get('count')}"
+            )
+    else:
+        lines.append("- No events found.")
+
+    lines.append("")
+
+    # Pod configuration
+    lines.append("Pod Configuration:")
+
+    if pod_details:
+        lines.append(
+            f"- Node: {pod_details.get('node')}"
+        )
+        lines.append(
+            f"- Service account: "
+            f"{pod_details.get('service_account')}"
+        )
+        lines.append(
+            f"- Restart policy: "
+            f"{pod_details.get('restart_policy')}"
+        )
+
+        for container in pod_details.get("containers", []):
+            lines.append(
+                f"- Container '{container.get('name')}' "
+                f"image: {container.get('image')}"
             )
 
-    # Get detailed container state from Kubernetes events
-    event_messages = [
-        event.get("message", "")
-        for event in events
-    ]
+            if container.get("ports"):
+                lines.append(
+                    f"  Ports: {container.get('ports')}"
+                )
 
-    image_pull_failure = any(
-        "failed to pull image" in message.lower()
-        or "imagepullbackoff" in message.lower()
-        or "errimagepull" in message.lower()
-        for message in event_messages
+            if container.get("env"):
+                lines.append(
+                    f"  Environment variables: "
+                    f"{container.get('env')}"
+                )
+
+            if container.get("resources"):
+                lines.append(
+                    f"  Resources: "
+                    f"{container.get('resources')}"
+                )
+
+            if container.get("volume_mounts"):
+                lines.append(
+                    f"  Volume mounts: "
+                    f"{container.get('volume_mounts')}"
+                )
+
+            if container.get("liveness_probe"):
+                lines.append(
+                    "  Liveness probe: configured"
+                )
+
+            if container.get("readiness_probe"):
+                lines.append(
+                    "  Readiness probe: configured"
+                )
+
+            if container.get("startup_probe"):
+                lines.append(
+                    "  Startup probe: configured"
+                )
+
+    else:
+        lines.append("- Pod configuration details unavailable.")
+
+    lines.append("")
+
+    # Deployment
+    lines.append("Deployment:")
+
+    if deployment:
+        lines.append(
+            f"- Name: {deployment.get('name')}"
+        )
+        lines.append(
+            f"- Replicas: {deployment.get('replicas')}"
+        )
+        lines.append(
+            f"- Ready replicas: "
+            f"{deployment.get('ready_replicas')}"
+        )
+        lines.append(
+            f"- Available replicas: "
+            f"{deployment.get('available_replicas')}"
+        )
+    else:
+        lines.append("- No deployment information available.")
+
+    lines.append("")
+
+    # Neutral runtime status
+    lines.append("Runtime Status:")
+
+    if status == "Running" and containers_ready:
+        lines.append(
+            "- Pod phase is Running and all reported "
+            "containers are Ready."
+        )
+    else:
+        lines.append(
+            "- Pod phase and/or container readiness indicate "
+            "that the workload is not currently fully ready."
+        )
+
+    lines.append("")
+    lines.append(
+        "Note: This summary reports evidence only. "
+        "Root-cause analysis should be performed using "
+        "the collected evidence."
     )
 
-    if image_pull_failure:
-        lines.append("⚠ Container image could not be pulled")
-
-    if restarts == 0:
-        lines.append("✓ No container restarts detected")
-    else:
-        lines.append(f"⚠ Container restarts: {restarts}")
-
-    if "200" in logs:
-        lines.append("✓ Logs contain successful HTTP 200 responses")
-    elif "Logs unavailable" in logs:
-        lines.append("⚠ Container logs are unavailable because the container has not started")
-  
-  # Deployment
-    if deployment:
-        lines.append("")
-        lines.append("Deployment:")
-        lines.append(f"Name: {deployment['name']}")
-
-        replicas = deployment["replicas"]
-        available = deployment["available_replicas"]
-
-        lines.append(f"Replicas: {available}/{replicas}")
-
-    # Policy/configuration findings
-    lines.append("")
-    lines.append("Configuration / Policy Findings:")
-
-    if policy_findings:
-        for finding in sorted(policy_findings):
-            lines.append(f"⚠ {finding}")
-    else:
-        lines.append("✓ No policy violations detected")
-
-    # Assessment
-    lines.append("")
-    lines.append("Assessment:")
-
-    if healthy and policy_findings:
-        lines.append(
-            "The pod is currently healthy from a runtime perspective. "
-            "However, its configuration has policy violations that "
-            "should be corrected."
-        )
-
-    elif healthy:
-        lines.append(
-            "The pod is currently healthy with no obvious runtime "
-            "or policy problems detected."
-        )
-
-    elif image_pull_failure:
-        lines.append(
-            "The pod is unhealthy because the container image "
-            "could not be pulled. Kubernetes reports an image "
-            "pull failure."
-        )
-
-    else:
-        lines.append(
-            "The pod is currently unhealthy and requires further "
-            "investigation."
-        )
     return "\n".join(lines)
+
 
 def investigate_unhealthy_pods(
     namespace: str = "default",
@@ -297,20 +356,34 @@ def analyze_with_llm(investigation):
     ]
 
     for container in investigation["pod"].get("containers", []):
-        retrieval_query_parts.extend(
-            [
-                container.get("state", ""),
-                container.get("reason", ""),
-            ]
-        )
+        container_state = container.get("state")
+        container_reason = container.get("reason")
 
-    for event in investigation.get("events", []):
-        retrieval_query_parts.append(
-            event.get("reason", "")
-    )
+        if container_state:
+            retrieval_query_parts.append(container_state)
+
+        if container_reason:
+            retrieval_query_parts.append(container_reason)
+
+    event_reasons = {
+        event.get("reason", "")
+        for event in investigation.get("events", [])
+        if event.get("reason")
+    }
+
+    retrieval_query_parts.extend(event_reasons)
+
+    # Include application logs as additional evidence for RAG.
+    # Logs are evidence only; they are not interpreted here.
+    for log_name in ("current", "previous"):
+        log_content = investigation.get("logs", {}).get(log_name, "")
+
+        if log_content and not log_content.startswith(
+            ("Logs unavailable", "Previous logs unavailable")
+        ):
+            retrieval_query_parts.append(log_content[:2000])
 
     retrieval_query = " ".join(retrieval_query_parts)
-    
     print(f"[AGENT] RAG query: {retrieval_query}")
 
     knowledge = search_knowledge(retrieval_query)
@@ -334,12 +407,21 @@ You are a Kubernetes troubleshooting assistant.
 Analyze the following Kubernetes investigation evidence.
 
 Your task:
-1. Identify the most likely root cause.
-2. Explain the evidence supporting the conclusion.
-3. Distinguish confirmed facts from assumptions.
-4. Recommend safe next steps.
-5. Do not suggest modifying production resources.
-6. Do not invent information that is not present in the evidence.
+1. Determine the most likely root cause or causes from the available evidence.
+2. Analyze all relevant evidence, including pod state, container state, logs, previous logs, events, deployment information, and any other evidence provided.
+3. Read application logs carefully and use specific log messages as evidence when they are available.
+4. Do not assume that a Kubernetes status such as Running or Ready means the application itself is healthy.
+5. Distinguish clearly between confirmed facts, strong indications, and assumptions.
+6. Explain the reasoning that connects the evidence to the suspected root cause.
+7. Identify any important missing evidence that prevents a definitive conclusion.
+8. Recommend practical and safe remediation steps based on the evidence.
+9. Prefer changes through source control or GitOps rather than direct changes to live resources.
+10. Do not modify Kubernetes resources.
+11. Do not invent information that is not present in the evidence.
+12. Do not assume the purpose or intent of a workload from its name, labels, or other naming conventions.
+13. Do not invent or guess replacement image names, tags, versions, configuration values, or other remediation details.
+14. If a specific replacement value is not present in the evidence or retrieved knowledge, state that the intended value must be determined from the source repository, Helm values, GitOps configuration, or other authoritative configuration.
+15. When recommending remediation, describe what should be corrected without inventing an exact replacement value unless one is supported by the available evidence.
 
 Investigation evidence:
 

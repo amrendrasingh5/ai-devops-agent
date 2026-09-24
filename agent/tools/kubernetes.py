@@ -96,16 +96,21 @@ def get_pod_events(
 
     return result
 
+
 def get_pod_logs(
     pod_name: str,
     namespace: str = "default",
     container: str | None = None,
-    tail_lines: int = 100
+    tail_lines: int = 100,
+    previous: bool = False,
 ):
     """
     Return recent logs from a Kubernetes pod.
 
     This function is read-only.
+
+    If previous=True, return logs from the previous
+    terminated container instance.
 
     If the container has not started yet, logs may not be
     available. In that case, return a descriptive message
@@ -121,6 +126,7 @@ def get_pod_logs(
             namespace=namespace,
             container=container,
             tail_lines=tail_lines,
+            previous=previous,
         )
 
         if isinstance(logs, bytes):
@@ -135,7 +141,11 @@ def get_pod_logs(
         if e.status == 400 and "waiting to start" in str(e.body):
             return "Logs unavailable: container has not started."
 
+        if previous and e.status in {400, 404}:
+            return "Previous logs unavailable: no previous container instance exists."
+
         return f"Logs unavailable: Kubernetes API returned HTTP {e.status}."
+
 def get_deployment(
     deployment_name: str,
     namespace: str = "default"
@@ -314,3 +324,154 @@ def find_pods(
             result.append(pod)
 
     return result
+
+def get_pod_details(
+    pod_name: str,
+    namespace: str = "default",
+):
+    """
+    Return detailed Kubernetes configuration for a pod.
+
+    This function is read-only.
+    """
+
+    config.load_kube_config()
+
+    v1 = client.CoreV1Api()
+
+    pod = v1.read_namespaced_pod(
+        name=pod_name,
+        namespace=namespace,
+    )
+
+    containers = []
+
+    for container in pod.spec.containers:
+        containers.append({
+            "name": container.name,
+            "image": container.image,
+            "command": container.command,
+            "args": container.args,
+            "ports": [
+                {
+                    "name": port.name,
+                    "container_port": port.container_port,
+                    "protocol": port.protocol,
+                }
+                for port in (container.ports or [])
+            ],
+            "env": [
+                {
+                    "name": env.name,
+                    "value": env.value,
+                    "value_from": (
+                        env.value_from.to_dict()
+                        if env.value_from
+                        else None
+                    ),
+                }
+                for env in (container.env or [])
+            ],
+            "resources": (
+                container.resources.to_dict()
+                if container.resources
+                else None
+            ),
+            "volume_mounts": [
+                {
+                    "name": mount.name,
+                    "mount_path": mount.mount_path,
+                    "read_only": mount.read_only,
+                }
+                for mount in (container.volume_mounts or [])
+            ],
+            "liveness_probe": (
+                container.liveness_probe.to_dict()
+                if container.liveness_probe
+                else None
+            ),
+            "readiness_probe": (
+                container.readiness_probe.to_dict()
+                if container.readiness_probe
+                else None
+            ),
+            "startup_probe": (
+                container.startup_probe.to_dict()
+                if container.startup_probe
+                else None
+            ),
+        })
+
+    volumes = []
+
+    for volume in (pod.spec.volumes or []):
+        volume_info = {
+            "name": volume.name,
+        }
+
+        if volume.config_map:
+            volume_info["type"] = "config_map"
+            volume_info["config_map"] = {
+                "name": volume.config_map.name,
+                "optional": volume.config_map.optional,
+            }
+
+        elif volume.secret:
+            volume_info["type"] = "secret"
+            volume_info["secret"] = {
+                "secret_name": volume.secret.secret_name,
+                "optional": volume.secret.optional,
+            }
+
+        elif volume.persistent_volume_claim:
+            volume_info["type"] = "persistent_volume_claim"
+            volume_info["persistent_volume_claim"] = {
+                "claim_name": volume.persistent_volume_claim.claim_name,
+                "read_only": volume.persistent_volume_claim.read_only,
+            }
+
+        elif volume.empty_dir:
+            volume_info["type"] = "empty_dir"
+
+        elif volume.host_path:
+            volume_info["type"] = "host_path"
+            volume_info["host_path"] = {
+                "path": volume.host_path.path,
+                "type": volume.host_path.type,
+            }
+
+        elif volume.projected:
+            volume_info["type"] = "projected"
+
+        elif volume.csi:
+            volume_info["type"] = "csi"
+            volume_info["csi"] = {
+                "driver": volume.csi.driver,
+                "read_only": volume.csi.read_only,
+            }
+
+        else:
+            volume_info["type"] = "other"
+
+        volumes.append(volume_info)
+
+    init_containers = []
+
+    for container in (pod.spec.init_containers or []):
+        init_containers.append({
+            "name": container.name,
+            "image": container.image,
+            "command": container.command,
+            "args": container.args,
+        })
+
+    return {
+        "name": pod.metadata.name,
+        "namespace": pod.metadata.namespace,
+        "service_account": pod.spec.service_account_name,
+        "node": pod.spec.node_name,
+        "restart_policy": pod.spec.restart_policy,
+        "containers": containers,
+        "init_containers": init_containers,
+        "volumes": volumes,
+    }

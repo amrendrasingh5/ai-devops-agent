@@ -8,7 +8,7 @@ from mcp.server.mcpserver import MCPServer
 
 mcp = MCPServer("devops-tools")
 
-REPO = Path("demo-repo")
+REPO = Path(__file__).resolve().parent
 
 
 @mcp.tool()
