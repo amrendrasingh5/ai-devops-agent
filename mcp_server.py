@@ -1,9 +1,12 @@
 from pathlib import Path
 
-from mcp.server.fastmcp import FastMCP
+from agent.tools.kubernetes import find_pods
+from agent.investigator import investigate_pod
+
+from mcp.server.mcpserver import MCPServer
 
 
-mcp = FastMCP("devops-tools")
+mcp = MCPServer("devops-tools")
 
 REPO = Path("demo-repo")
 
@@ -71,6 +74,41 @@ def search_repository(
 
     return sorted(results)
 
+@mcp.tool()
+def find_unhealthy_pods(
+    namespace: str | None = None,
+) -> list[dict]:
+    """
+    Find unhealthy Kubernetes pods.
+
+    If namespace is provided, search only that namespace.
+    If namespace is omitted, search all namespaces.
+
+    This tool is read-only.
+    """
+
+    return find_pods(
+        namespace=namespace,
+        health="unhealthy",
+    )
+
+
+@mcp.tool()
+def get_pod_investigation(
+    pod_name: str,
+    namespace: str = "default",
+) -> dict:
+    """
+    Collect read-only Kubernetes investigation evidence for a pod.
+
+    Returns pod state, container state, events, logs, and deployment
+    information when available.
+    """
+
+    return investigate_pod(
+        pod_name=pod_name,
+        namespace=namespace,
+    )
 
 if __name__ == "__main__":
     mcp.run()

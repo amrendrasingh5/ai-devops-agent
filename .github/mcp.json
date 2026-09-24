@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "devops-tools": {
+      "type": "local",
+      "command": "python",
+      "args": ["mcp_server.py"],
+      "tools": [
+        "list_repository_files",
+        "read_repository_file",
+        "search_repository",
+        "find_unhealthy_pods",
+        "get_pod_investigation"
+      ]
+    }
+  }
+}
