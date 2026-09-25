@@ -1,230 +1,691 @@
 # AI DevOps Agent
 
-An agentic DevOps assistant for investigating Kubernetes and Amazon EKS issues using automated evidence collection and AI-assisted root-cause analysis.
+An agentic DevOps assistant for investigating Kubernetes and Amazon EKS issues using automated evidence collection, RAG-based knowledge retrieval, MCP tools, and AI-assisted root-cause analysis.
 
-The project combines deterministic Kubernetes tooling with GitHub Copilot CLI to investigate pod health, events, logs, deployments, container states, and policy violations.
+The project combines deterministic Kubernetes and endpoint investigation tools with GitHub Copilot CLI to investigate pod health, application failures, Kubernetes events, deployments, services, endpoint connectivity, Helm configuration, and policy violations.
 
-> **Current status:** Read-only Kubernetes investigation and AI-assisted analysis. No production write operations are implemented.
+> **Current status:** Read-only Kubernetes and endpoint investigation with AI-assisted analysis. No automatic Kubernetes write operations are implemented.
 
 ---
 
 ## Overview
 
-Troubleshooting Kubernetes incidents often requires checking several sources of information:
+Troubleshooting Kubernetes and application incidents often requires checking information from several different sources.
+
+For example, a single problem may require investigating:
 
 * Pod status
-* Container readiness and restart counts
+* Container readiness
 * Container states and failure reasons
+* Restart counts
 * Kubernetes events
-* Container logs
+* Current and previous container logs
 * ReplicaSets and Deployments
-* Admission/policy violations
 * Container image configuration
+* Admission and policy violations
+* Services
+* EndpointSlices
+* Ingress resources
+* Endpoint connectivity
+* DNS resolution
+* TCP connectivity
+* HTTP/HTTPS responses
+* Helm releases
+* Helm values
+* Helm manifests
+* Deployment configuration
 
-The AI DevOps Agent automates this evidence-gathering process and provides a structured investigation that can then be analyzed by an AI model.
+The AI DevOps Agent automates this evidence-gathering process and provides the collected evidence to an AI model for structured investigation.
 
-### Current workflow
+The design intentionally separates:
 
 ```text
-User
-  │
-  ▼
-AI DevOps Agent
-  │
-  ▼
-Kubernetes Investigation Tools
-  │
-  ├── Pod health
-  ├── Container states
-  ├── Events
-  ├── Logs
-  └── Deployment information
-  │
-  ▼
+Evidence collection
+        ↓
+Knowledge retrieval
+        ↓
+AI reasoning
+        ↓
+Finding
+        ↓
 Evidence
-  │
-  ▼
-GitHub Copilot CLI
-  │
-  ▼
-Root-Cause Analysis
-  │
-  ▼
-Recommended Next Steps
+        ↓
+Recommendation
 ```
 
-The design intentionally separates **evidence collection** from **AI reasoning**.
+The agent does not use hard-coded troubleshooting logic such as:
+
+```text
+IF connection refused
+THEN load balancer is broken
+```
+
+Instead, tools collect evidence and the AI analyzes the complete evidence set.
 
 ---
 
-## Current Capabilities
+# Current Capabilities
 
-### Kubernetes investigation
+## 1. Pod Investigation
 
-The agent can currently:
+The agent can investigate a specific Kubernetes Pod.
 
-* List pods in a namespace
-* Identify healthy and unhealthy pods
-* Inspect container readiness
-* Inspect container restart counts
-* Inspect container states
-* Detect image-pull failures
-* Retrieve Kubernetes events
-* Retrieve container logs
-* Resolve a Pod → ReplicaSet → Deployment relationship
-* Retrieve Deployment replica information
-* Detect selected Kubernetes policy violations
-* Automatically investigate unhealthy pods
+Example:
 
-### AI-assisted analysis
+```text
+Hey, check why the pod is not running.
+```
 
-Investigation evidence can be passed to GitHub Copilot CLI for analysis.
+or:
 
-The AI is instructed to:
+```text
+Check pod node-server-xxxx in namespace atgse-web.
+```
 
-1. Identify the most likely root cause
-2. Explain the evidence supporting the conclusion
-3. Distinguish confirmed facts from assumptions
-4. Recommend safe next steps
-5. Avoid production modifications
-6. Avoid inventing information that is not present in the evidence
+The investigation can collect:
+
+* Pod phase
+* Pod readiness
+* Container readiness
+* Container state
+* Container state reason
+* Container restart count
+* Container image
+* Kubernetes events
+* Current container logs
+* Previous container logs
+* Pod details
+* Deployment information
+
+The agent can also distinguish between a Kubernetes-level problem and an application-level problem.
+
+For example, a Pod can be:
+
+```text
+Running
+Ready
+0 restarts
+```
+
+while the application itself is still failing.
+
+Application logs and other evidence are therefore considered during the investigation.
 
 ---
 
-## Example Investigation
+## 2. Unhealthy Pod Discovery
 
-A controlled lab failure was created using a Kubernetes Deployment with a
-non-existent container image:
+The project can automatically discover unhealthy Pods instead of requiring the user to know the Pod name first.
+
+For example:
+
+```text
+Find unhealthy pods.
+```
+
+The investigation can identify Pods with conditions such as:
+
+* Pending
+* Failed
+* Container waiting states
+* Container termination failures
+* Image-pull problems
+* Restart activity
+* Readiness problems
+
+The discovered Pods can then be investigated further.
+
+---
+
+## 3. Pod → ReplicaSet → Deployment Investigation
+
+The agent can follow the Kubernetes ownership relationship:
+
+```text
+Pod
+ ↓
+ReplicaSet
+ ↓
+Deployment
+```
+
+This allows the investigation to move from an individual failing Pod to the workload that created it.
+
+Deployment evidence can include:
+
+* Deployment name
+* Namespace
+* Desired replicas
+* Available replicas
+* Ready replicas
+* Deployment configuration
+
+This is important because fixing a Pod directly is normally not the correct long-term solution when the Pod is controlled by a Deployment.
+
+---
+
+## 4. Image and Container Startup Problems
+
+The agent can investigate container startup problems using Kubernetes state and events.
+
+For example, a controlled lab failure using:
 
 ```bash
 kubectl create deployment ai-devops-test-failing \
   --image=nginx:this-image-does-not-exist
 ```
 
-The Deployment created a ReplicaSet and Pod:
+produces evidence such as:
+
+```text
+Pod phase:
+Pending
+
+Container state:
+Waiting
+
+Container reason:
+ImagePullBackOff
+
+Image:
+nginx:this-image-does-not-exist
+```
+
+The agent can correlate this with Kubernetes events such as:
+
+```text
+ErrImagePull
+ImagePullBackOff
+```
+
+It also recognizes when application logs are unavailable because the container never successfully started.
+
+The agent does not invent a replacement image tag. Instead, it recommends checking the source configuration, Helm values, GitOps repository, or image registry configuration.
+
+---
+
+## 5. Runtime Application Failure Investigation
+
+A Kubernetes Pod being `Running` does not necessarily mean the application is healthy.
+
+The agent can inspect application logs in addition to Kubernetes status.
+
+For example, a test application may produce:
+
+```text
+Application startup completed
+ERROR: No space left on device while writing application data
+```
+
+Even if Kubernetes reports:
+
+```text
+Running
+Ready
+```
+
+the AI analysis can identify the application error from the logs.
+
+This allows the investigation to distinguish:
+
+```text
+Kubernetes runtime state
+```
+
+from:
+
+```text
+Application health
+```
+
+---
+
+## 6. Kubernetes Events
+
+Kubernetes events are collected as part of the investigation.
+
+Events can provide important evidence about:
+
+* Scheduling
+* Image pulling
+* Container startup
+* Container termination
+* Readiness
+* Mounting
+* Admission policies
+* Other Kubernetes resource activity
+
+The agent does not treat a single event as proof of the final root cause.
+
+Events are combined with:
+
+* Pod state
+* Container state
+* Logs
+* Deployment configuration
+* Other available evidence
+
+---
+
+## 7. Endpoint / URL Investigation
+
+The agent can investigate an HTTP or HTTPS endpoint.
+
+Example:
+
+```text
+Check https://example.company.com and investigate if there is any problem.
+```
+
+The endpoint investigation collects evidence from several layers:
+
+```text
+URL
+ ↓
+DNS
+ ↓
+TCP
+ ↓
+TLS / HTTPS
+ ↓
+HTTP response
+```
+
+The agent can collect information such as:
+
+* DNS resolution
+* Resolved addresses
+* TCP connectivity
+* HTTPS connectivity
+* HTTP status
+* HTTP response reason
+* Response headers
+* Connection errors
+
+The tools only collect evidence.
+
+They do not contain hard-coded rules that assume a particular error always has a particular root cause.
+
+---
+
+## 8. Kubernetes Network Path Investigation
+
+When an endpoint is associated with Kubernetes, the agent can continue the investigation into the Kubernetes request path.
+
+The current flow is:
+
+```text
+Hostname
+   ↓
+Ingress
+   ↓
+Service
+   ↓
+EndpointSlice
+   ↓
+Backend Pods
+   ↓
+Deployment
+```
+
+The investigation can collect:
+
+* Matching Ingress resources
+* Ingress class
+* Load balancer information
+* Service configuration
+* Service ports
+* Service selectors
+* EndpointSlice information
+* Endpoint addresses
+* Endpoint readiness
+* Backend Pod information
+
+This helps connect an external endpoint problem with the Kubernetes resources behind it.
+
+---
+
+## 9. Ingress and Load Balancer Investigation
+
+The agent can identify Kubernetes Ingress resources matching an endpoint hostname.
+
+For example:
+
+```text
+https://atgse-web.lab.c1.atg-tech.dev
+```
+
+can be traced through the Kubernetes resources responsible for serving the hostname.
+
+The investigation can identify information such as:
+
+```text
+Ingress
+   ↓
+ALB / Load Balancer
+   ↓
+Service
+   ↓
+EndpointSlice
+   ↓
+Pods
+```
+
+This provides a structured evidence path instead of investigating the endpoint and Kubernetes resources independently.
+
+---
+
+## 10. Service and EndpointSlice Investigation
+
+The agent can inspect Kubernetes Services and EndpointSlices.
+
+Service evidence can include:
+
+* Service name
+* Namespace
+* Service type
+* Cluster IP
+* Ports
+* Selector
+
+EndpointSlice evidence can include:
+
+* Service relationship
+* Endpoint addresses
+* Ready state
+* Serving state
+* Terminating state
+* Node information
+* Target references
+
+The agent can therefore determine what backend endpoints Kubernetes currently exposes for a Service.
+
+---
+
+## 11. Helm Investigation
+
+The agent can follow the workload configuration into Helm.
+
+The current investigation can identify the relationship:
 
 ```text
 Deployment
-  ↓
-ReplicaSet
-  ↓
-ai-devops-test-failing-<pod-id>
+    ↓
+Helm release
 ```
 
-The agent was then asked:
+For a Helm-managed workload, the agent can collect:
 
-```text
-Hey, check why the pod is not running in the default namespace.
-```
+* Helm release name
+* Release namespace
+* Chart
+* Chart version
+* Application version
+* Release revision
+* Release status
+* Helm values
+* Rendered Helm manifest
+* Deployment configuration
 
-Using the DevOps MCP tools, the agent:
+The purpose is to connect runtime evidence with the configuration that created the workload.
 
-1. Discovered the unhealthy pod.
-2. Collected pod and container state.
-3. Collected Kubernetes events.
-4. Collected Deployment information.
-5. Checked whether logs were available.
-6. Searched the repository for supporting configuration.
-7. Analyzed the evidence and identified the root cause.
-8. Recommended safe remediation without modifying the cluster.
-
-The investigation identified:
-
-* Pod phase: `Pending`
-* Container state: `Waiting`
-* Container reason: `ImagePullBackOff`
-* Configured image: `nginx:this-image-does-not-exist`
-* Image pull error: `ErrImagePull`
-* Repeated Kubernetes image-pull failure events
-* A `PolicyViolation` from the cluster image-registry policy
-* No application logs because the container never started
-* Deployment: `ai-devops-test-failing`
-
-The agent distinguished confirmed evidence from assumptions and did not make
-any Kubernetes changes.
-
-The lab workload can be removed with:
-
-```bash
-kubectl delete deployment ai-devops-test-failing -n default
-```
+The agent remains read-only.
 
 ---
 
-## Healthy Pod Investigation
+## 12. Complete Endpoint → Kubernetes → Helm Investigation
 
-The same investigation workflow can analyze a healthy workload.
+For an endpoint investigation, the agent can combine the different evidence sources.
 
-For example, a healthy NGINX deployment can produce evidence such as:
-
-```text
-Current Health: HEALTHY
-
-✓ Pod is Running
-✓ All containers are Ready
-✓ No container restarts detected
-✓ Logs contain successful HTTP 200 responses
-
-Deployment:
-Name: nginx-deployment
-Replicas: 3/3
-```
-
-The agent also separates runtime health from configuration and policy findings.
-
-For example, a pod can be healthy at runtime while still using a mutable image tag such as:
+The overall flow is:
 
 ```text
-nginx:latest
-```
-
-This distinction is important because a configuration or policy issue does not necessarily mean that the workload is currently unhealthy.
-
----
-
-## AI Analysis
-
-GitHub Copilot CLI is used as the current AI interface.
-
-The project invokes Copilot through the GitHub CLI:
-
-```text
-gh copilot
-```
-
-The integration is intentionally kept separate from Kubernetes access.
-
-The Kubernetes Python tools collect evidence.
-
-The AI receives that evidence and performs analysis.
-
-```text
-Kubernetes API
-      │
-      ▼
-Python investigation tools
-      │
-      ▼
-Structured evidence
-      │
-      ▼
-GitHub Copilot CLI
-      │
-      ▼
+User
+  │
+  │ "Check this URL"
+  ▼
+Endpoint investigation
+  │
+  ├── DNS
+  ├── TCP
+  └── HTTPS / HTTP
+  │
+  ▼
+Kubernetes investigation
+  │
+  ├── Ingress
+  ├── Service
+  ├── EndpointSlice
+  └── Pods
+  │
+  ▼
+Workload investigation
+  │
+  ├── Deployment
+  └── Helm
+       ├── Release
+       ├── Values
+       ├── Manifest
+       └── Status
+  │
+  ▼
+RAG knowledge
+  │
+  ▼
 AI analysis
+  │
+  ▼
+Finding
+Evidence
+Recommendation
 ```
 
-The AI does not receive unrestricted Kubernetes access through the current implementation.
+This makes it possible to investigate an issue across multiple infrastructure layers instead of stopping at the first failed check.
 
 ---
 
-## Safety Model
+## 13. RAG Knowledge Retrieval
+
+The project includes a knowledge base containing DevOps and Kubernetes troubleshooting guidance.
+
+The investigation creates a query from the collected evidence and retrieves relevant knowledge.
+
+For example:
+
+```text
+Kubernetes
+ImagePullBackOff
+container state
+events
+application logs
+Helm
+```
+
+Relevant knowledge can then be supplied to the AI analysis.
+
+The knowledge base is intended to provide general troubleshooting knowledge rather than hard-coded solutions for individual incidents.
+
+Current knowledge includes topics such as:
+
+* Kubernetes troubleshooting
+* Image-pull failures
+* Container startup problems
+* Evidence interpretation
+* Safe remediation
+* Terraform standards
+
+---
+
+# MCP and GitHub Copilot
+
+The project also includes an MCP server that exposes read-only DevOps tools.
+
+Current MCP tools include:
+
+```text
+list_repository_files
+read_repository_file
+search_repository
+find_unhealthy_pods
+get_pod_investigation
+```
+
+GitHub Copilot CLI can use these tools to investigate the environment and repository.
+
+The architecture is:
+
+```text
+GitHub Copilot
+       │
+       ▼
+MCP Server
+       │
+       ├── Kubernetes investigation
+       ├── Pod discovery
+       ├── Repository search
+       └── Repository inspection
+```
+
+The MCP layer provides controlled access to the investigation capabilities without giving the AI unrestricted Kubernetes write access.
+
+---
+
+# AI-Assisted Root-Cause Analysis
+
+The collected evidence is provided to the AI for analysis.
+
+The AI is instructed to:
+
+1. Determine the most likely root cause.
+2. Analyze all available evidence.
+3. Read application logs when available.
+4. Distinguish confirmed facts from strong indications.
+5. Identify assumptions.
+6. Identify missing evidence.
+7. Recommend safe remediation.
+8. Prefer source control and GitOps for configuration changes.
+9. Avoid inventing information.
+10. Never modify the environment during the investigation.
+
+The current analysis format is:
+
+```text
+Finding: ...
+
+Evidence: ...
+
+Recommendation: ...
+```
+
+---
+
+# Example User Requests
+
+The agent is designed to understand natural-language DevOps questions.
+
+### Pod troubleshooting
+
+```text
+Hey, check why the pod is not running.
+```
+
+```text
+Check pod node-server-xxxx in namespace atgse-web.
+```
+
+```text
+Why is this pod unhealthy?
+```
+
+```text
+Investigate the pod and tell me what is wrong.
+```
+
+### Cluster investigation
+
+```text
+Find unhealthy pods.
+```
+
+```text
+Check the unhealthy workloads in this namespace.
+```
+
+### Endpoint troubleshooting
+
+```text
+I cannot reach https://example.company.com.
+Find out why.
+```
+
+```text
+Check https://example.company.com and investigate if there is any problem.
+```
+
+```text
+Investigate the Kubernetes path behind this URL.
+```
+
+### Combined investigation
+
+```text
+Check the endpoint, investigate the Kubernetes backend,
+and determine the most likely root cause.
+```
+
+```text
+Check whether the Deployment or Helm configuration could
+explain the endpoint problem.
+```
+
+The user does not need to specify which troubleshooting branch to execute.
+
+The agent determines which evidence should be collected based on the request and the available resources.
+
+---
+
+# Evidence-Driven Troubleshooting
+
+A core design principle is that the agent should not contain a large collection of hard-coded error-to-solution rules.
+
+For example, the implementation should not contain logic such as:
+
+```python
+if connection_refused:
+    return "The load balancer is broken"
+```
+
+Instead:
+
+```text
+User request
+     ↓
+Determine investigation scope
+     ↓
+Collect evidence
+     ↓
+Retrieve relevant knowledge
+     ↓
+AI analyzes evidence
+     ↓
+Identify supported findings
+     ↓
+Identify missing evidence
+     ↓
+Recommend safe next steps
+```
+
+This makes the approach applicable to different types of incidents, including problems that were not explicitly anticipated when the tool was developed.
+
+---
+
+# Safety Model
 
 Safety is a core design principle of this project.
 
-### Current boundary
+## Current boundary
 
-The current Kubernetes tools are **read-only**.
+The current Kubernetes investigation tools are read-only.
 
 They can inspect resources but do not:
 
@@ -235,14 +696,35 @@ They can inspect resources but do not:
 * Modify Secrets
 * Apply Kubernetes manifests
 * Scale workloads
-* Restart production workloads
+* Restart workloads
+* Modify production resources
 
-### Planned approval model
+The endpoint investigation is also read-only.
 
-Future write operations will follow a human-in-the-loop workflow:
+The Helm integration uses read-only commands such as:
+
+```text
+helm get values
+helm get status
+helm get manifest
+helm get metadata
+```
+
+No Helm upgrade or other write operation is performed.
+
+---
+
+# Human-in-the-Loop Remediation
+
+The current agent only investigates and recommends.
+
+Future write operations should follow a human-in-the-loop workflow:
 
 ```text
 Investigation
+     │
+     ▼
+Evidence
      │
      ▼
 Root-cause analysis
@@ -260,392 +742,170 @@ Git change / Pull Request
 Review
      │
      ▼
-Deployment
+GitOps deployment
 ```
 
-The agent should not autonomously make production changes.
+The goal is to keep investigation automated while keeping infrastructure changes controlled and reviewable.
 
 ---
 
-## Project Structure
+# Project Structure
 
 ```text
 ai-devops-agent/
 │
 ├── agent/
-│   ├── __init__.py
 │   ├── agent.py
 │   ├── investigator.py
-│   ├── llm.py
+│   ├── request.py
 │   │
 │   └── tools/
-│       ├── __init__.py
-│       └── kubernetes.py
-│
-├── demo-repo/
-│   ├── docs/
-│   │   └── terraform-standards.md
-│   │
-│   └── terraform/
-│       ├── environments/
-│       │   └── qa/
-│       │       └── main.tf
-│       │
-│       └── modules/
-│           └── network/
-│               └── main.tf
+│       ├── kubernetes.py
+│       ├── endpoint.py
+│       └── helm.py
 │
 ├── knowledge/
+│   ├── kubernetes-troubleshooting.md
 │   └── terraform-standards.md
 │
-├── agent_planner.py
-├── main.py
-├── mcp_server.py
-├── planner.py
+├── .github/
+│   └── mcp.json
+│
 ├── rag.py
-├── tools.py
-├── test_tools.py
+├── mcp_server.py
+├── main.py
 ├── requirements.txt
 └── README.md
 ```
 
-Some of these components represent experimental or planned parts of the agent architecture and will evolve as the project develops.
-
 ---
 
-## Requirements
+# Current Technology
 
-The current project uses:
+The project currently uses:
 
-* Python 3.14+
+* Python
 * Kubernetes Python client
-* MCP Python SDK
-* `kubectl`
-* AWS CLI
-* Git
-* GitHub CLI
+* Amazon EKS
+* Kubernetes API
+* Helm CLI
+* MCP
 * GitHub Copilot CLI
-
-Python dependencies are pinned in:
-
-```text
-requirements.txt
-```
-
-Current dependencies:
-
-```text
-kubernetes==36.0.3
-mcp==2.2.0
-```
+* RAG knowledge retrieval
+* Git
+* GitHub
 
 ---
 
-## Installation
+# Installation and Running
 
-Clone the repository:
+## Clone the repository
 
 ```bash
 git clone git@github.com:amrendrasingh5/ai-devops-agent.git
 cd ai-devops-agent
 ```
 
-Create a virtual environment:
+## Create and activate the Python virtual environment
 
 ```bash
 python3 -m venv .venv
-```
-
-Activate it:
-
-```bash
 source .venv/bin/activate
 ```
 
-Install dependencies:
+## Install Python dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-Verify Kubernetes access:
+## Verify Kubernetes access
 
-```bash
-kubectl get pods
-```
+The agent uses the Kubernetes context configured on the local machine.
 
-The Python Kubernetes client uses the current kubeconfig context.
-
----
-
-## Kubernetes Access
-
-The current implementation uses:
-
-```python
-config.load_kube_config()
-```
-
-This means the agent uses the Kubernetes context configured on the local machine.
-
-Before running investigations, verify the active context:
+Check the active context:
 
 ```bash
 kubectl config current-context
 ```
 
-Then verify access:
+Verify that Kubernetes is accessible:
 
 ```bash
 kubectl get pods
 ```
 
-For the current development environment, investigations are performed against a non-production Kubernetes/EKS environment.
+The current development environment is intended for non-production Kubernetes/EKS investigation.
 
----
+## Run the AI DevOps Agent
 
-## Running an Investigation
+Start the interactive agent:
 
-The investigation functionality can be used directly from Python.
-
-Example:
-
-```python
-from agent.investigator import investigate_pod
-
-investigation = investigate_pod(
-    "nginx-deployment-65b5d9df77-hvl67",
-    "default",
-)
-
-print(investigation)
+```bash
+python main.py
 ```
 
-Human-readable summaries can be generated with:
-
-```python
-from agent.investigator import (
-    investigate_pod,
-    summarize_investigation,
-)
-
-investigation = investigate_pod(
-    "nginx-deployment-65b5d9df77-hvl67",
-    "default",
-)
-
-print(summarize_investigation(investigation))
-```
-
----
-
-## Investigating Unhealthy Pods
-
-The agent can automatically discover unhealthy pods:
-
-```python
-from agent.investigator import investigate_unhealthy_pods
-
-results = investigate_unhealthy_pods("default")
-
-for result in results:
-    print(result["summary"])
-```
-
-The workflow is:
+You can then enter natural-language DevOps questions, for example:
 
 ```text
-Find unhealthy pods
-        │
-        ▼
-Investigate each pod
-        │
-        ├── Pod status
-        ├── Containers
-        ├── Events
-        ├── Logs
-        └── Deployment
-        │
-        ▼
-Generate investigation summary
+Hey, check why the pod is not running.
 ```
 
----
-
-## AI-Assisted Investigation
-
-The collected evidence can be analyzed using GitHub Copilot:
-
-```python
-from agent.investigator import (
-    investigate_pod,
-    analyze_with_llm,
-)
-
-investigation = investigate_pod(
-    "nginx-deployment-65b5d9df77-hvl67",
-    "default",
-)
-
-analysis = analyze_with_llm(investigation)
-
-print(analysis)
-```
-
-The AI analysis is based on evidence collected by the project's Kubernetes tools.
-
----
-
-## Design Principles
-
-The project follows several principles.
-
-### 1. Evidence before reasoning
-
-The agent should collect concrete infrastructure evidence before asking an AI model to reason about the problem.
-
-### 2. Separate tools from reasoning
-
-Kubernetes access and AI reasoning are separate components.
-
-This makes the system easier to test and reduces the risk of an AI model directly controlling infrastructure.
-
-### 3. Human approval for changes
-
-Future remediation actions should require explicit human approval.
-
-### 4. Production safety
-
-Production environments should not be modified autonomously.
-
-### 5. Infrastructure as Code
-
-Future infrastructure changes should be represented through Git-based workflows and reviewed Pull Requests rather than direct manual production changes.
-
-### 6. Explainability
-
-The agent should explain:
-
-* What it observed
-* What is confirmed
-* What is inferred
-* Why a particular root cause is suspected
-* What action is recommended
-
----
-
-## Roadmap
-
-### Phase 1 — Kubernetes Investigation
-
-* [x] Pod discovery
-* [x] Pod health detection
-* [x] Container state inspection
-* [x] Event collection
-* [x] Log collection
-* [x] Deployment relationship discovery
-* [x] Unhealthy pod investigation
-* [x] Human-readable investigation summaries
-
-### Phase 2 — AI Reasoning
-
-* [x] GitHub Copilot CLI integration
-* [x] Evidence-based root-cause analysis
-* [x] Fact vs assumption distinction
-* [x] Safe remediation recommendations
-
-### Phase 3 — Agent Tools
-
-Planned integrations:
-
-* [ ] Flux
-* [ ] GitHub
-* [ ] AWS
-* [ ] CloudWatch
-* [ ] Dynatrace
-* [ ] Additional Kubernetes resources
-* [ ] MCP-based tool integration
-
-### Phase 4 — Knowledge / RAG
-
-Planned capabilities:
-
-* [ ] Terraform standards
-* [ ] Kubernetes standards
-* [ ] Internal engineering documentation
-* [ ] Runbooks
-* [ ] Architecture documentation
-* [ ] Retrieval-augmented investigation
-
-### Phase 5 — GitOps Remediation
-
-Planned workflow:
+or:
 
 ```text
-Incident
-   │
-   ▼
+Check https://example.company.com and investigate if there is any problem.
+```
+
+Type `exit` or `quit` to stop the agent.
+
+## GitHub Copilot and MCP
+
+The project also includes an MCP server for read-only DevOps investigation tools.
+
+Start GitHub Copilot CLI with workspace MCP support:
+
+```bash
+GITHUB_COPILOT_PROMPT_MODE_WORKSPACE_MCP=true gh copilot
+```
+
+The configured MCP tools provide read-only access to:
+
+* Repository files
+* Repository search
+* Unhealthy Pod discovery
+* Pod investigation
+
+---
+
+# Current Scope
+
+The current implementation focuses on:
+
+```text
+Read-only investigation
++
 Evidence collection
-   │
-   ▼
-AI root-cause analysis
-   │
-   ▼
-Suggested remediation
-   │
-   ▼
-Human approval
-   │
-   ▼
-Git change
-   │
-   ▼
-Pull Request
-   │
-   ▼
-CI validation
-   │
-   ▼
-Human review
++
+RAG knowledge retrieval
++
+AI-assisted analysis
++
+Human-approved remediation recommendations
 ```
 
-Direct production modification is intentionally excluded from the design.
+Production write operations are intentionally outside the current scope.
 
----
-
-## Development Philosophy
-
-This project is intended to explore how AI agents can assist DevOps engineers without removing engineering controls.
-
-The goal is not simply to allow an LLM to execute shell commands.
-
-Instead, the project focuses on:
+The architecture is designed so additional evidence sources can be added later, such as:
 
 ```text
-Deterministic tools
-       +
-Infrastructure evidence
-       +
-AI reasoning
-       +
-Engineering standards
-       +
-Human approval
-       =
-Controlled Agentic DevOps
+Flux / GitOps
+GitHub repositories
+AWS / CloudWatch
+Prometheus
+Dynatrace
+Other observability systems
 ```
 
-The architecture is designed to evolve from Kubernetes troubleshooting into a broader platform-engineering assistant while maintaining clear boundaries around infrastructure access and production changes.
-
----
-
-## Status
-
-**Active development**
-
-Current milestone:
-
-> Kubernetes evidence collection → structured investigation → GitHub Copilot AI analysis
-
-Future milestones will expand the agent toward AWS, GitOps, observability, knowledge retrieval, and human-approved remediation workflows.
+without changing the core principle of evidence-driven investigation.
 

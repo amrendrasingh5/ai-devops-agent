@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 import re
-
+URL_PATTERN = r"https?://[^\s]+"
 
 @dataclass
 class DevOpsRequest:
@@ -12,6 +12,7 @@ class DevOpsRequest:
     resource_type: str | None = None
     resource_name: str | None = None
     namespace: str | None = None
+    url: str | None = None
     original_request: str = ""
 
 
@@ -25,6 +26,17 @@ def understand_request(request: str) -> DevOpsRequest:
     resource_type = None
     resource_name = None
     intent = "unknown"
+    url = None
+
+    url_matches = re.findall(
+        URL_PATTERN,
+        request,
+    )
+
+    if url_matches:
+        url = url_matches[0].rstrip(".,!?;:")
+        intent = "investigate"
+        resource_type = "endpoint"
 
     # Detect pod-related requests.
     if "pod" in request_lower:
@@ -52,23 +64,25 @@ def understand_request(request: str) -> DevOpsRequest:
     # Try to identify a Kubernetes pod name.
     pod_name_pattern = r"\b[a-z0-9][a-z0-9.-]*-[a-z0-9]+\b"
 
-    matches = re.findall(
-        pod_name_pattern,
-        request_lower,
-    )
+    if resource_type != "endpoint":
+        matches = re.findall(
+            pod_name_pattern,
+            request_lower,
+        )
 
-    if matches:
-        resource_name = matches[0]
+        if matches:
+            resource_name = matches[0]
 
-        # If the request contains a Kubernetes-style resource name
-        # but does not explicitly mention the resource type, assume
-        # pod for the current pod-investigation capability.
-        if resource_type is None:
-            resource_type = "pod"
+            # If the request contains a Kubernetes-style resource name
+            # but does not explicitly mention the resource type, assume
+            # pod for the current pod-investigation capability.
+            if resource_type is None:
+                resource_type = "pod"
 
     return DevOpsRequest(
         intent=intent,
         resource_type=resource_type,
         resource_name=resource_name,
+        url=url,
         original_request=request,
     )

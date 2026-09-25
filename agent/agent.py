@@ -2,9 +2,13 @@ from agent.investigator import (
     investigate_pod,
     analyze_with_llm,
     find_pods,
+    investigate_url_kubernetes_helm,
 )
 
 from agent.request import understand_request
+from agent.tools.endpoint import investigate_endpoint
+from agent.tools.kubernetes import investigate_url_kubernetes_path
+from urllib.parse import urlparse
 
 class DevOpsAgent:
     """
@@ -129,13 +133,77 @@ class DevOpsAgent:
         # Step 2: Validate supported request
         # ---------------------------------------------------------
 
-        if (
-            devops_request.intent != "investigate"
-            or devops_request.resource_type != "pod"
-        ):
+        if devops_request.intent != "investigate":
+            print(
+                "\n[AGENT] I could not identify "
+                "an investigation request."
+            )
+
+            return devops_request
+
+        # ---------------------------------------------------------
+        # Step 2a: User specified an endpoint
+        # ---------------------------------------------------------
+
+        if devops_request.resource_type == "endpoint":
+            print(
+                f"\n[AGENT] Investigating endpoint: "
+                f"{devops_request.url}"
+            )
+
+            endpoint_evidence = investigate_endpoint(
+                devops_request.url
+            )
+
+            print("\n[AGENT] Endpoint evidence collected.")
+
+            parsed_url = urlparse(
+                devops_request.url
+            )
+
+            hostname = parsed_url.hostname
+
+            kubernetes_evidence = {}
+
+            if hostname:
+                kubernetes_evidence = (
+                    investigate_url_kubernetes_helm(
+                        hostname
+                    )
+                )
+
+                print(
+                    "\n[AGENT] Kubernetes endpoint path "
+                    "and Helm evidence collected."
+                )
+
+            evidence = {
+                "endpoint": endpoint_evidence,
+                "kubernetes": kubernetes_evidence,
+            }
+
+            print(
+                "\n[AGENT] Analyzing combined endpoint "
+                "and Kubernetes evidence with AI..."
+            )
+
+            analysis = analyze_with_llm(evidence)
+
+            print("\n================================")
+            print("AI ANALYSIS")
+            print("================================")
+            print(analysis)
+
+            return analysis
+
+        # ---------------------------------------------------------
+        # Step 2b: Kubernetes pod investigation
+        # ---------------------------------------------------------
+
+        if devops_request.resource_type != "pod":
             print(
                 "\n[AGENT] I currently support "
-                "Kubernetes pod investigation."
+                "Kubernetes pod and endpoint investigation."
             )
 
             return devops_request

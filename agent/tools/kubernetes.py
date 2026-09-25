@@ -186,10 +186,6 @@ def get_deployment(
         "containers": containers,
     }
 
-def get_deployment(
-    deployment_name: str,
-    namespace: str = "default"
-):
     """
     Return useful information about a Kubernetes Deployment.
 
@@ -226,6 +222,407 @@ def get_deployment(
         "containers": containers,
     }
 
+def get_services(namespace: str = "default"):
+    """
+    Return Kubernetes Services in a namespace.
+
+    This function is read-only.
+    """
+    config.load_kube_config()
+
+    v1 = client.CoreV1Api()
+
+    services = v1.list_namespaced_service(
+        namespace=namespace,
+    )
+
+    result = []
+
+    for service in services.items:
+        result.append({
+            "name": service.metadata.name,
+            "namespace": service.metadata.namespace,
+            "type": service.spec.type,
+            "cluster_ip": service.spec.cluster_ip,
+            "ports": [
+                {
+                    "name": port.name,
+                    "port": port.port,
+                    "target_port": str(port.target_port),
+                    "protocol": port.protocol,
+                }
+                for port in (service.spec.ports or [])
+            ],
+            "selector": service.spec.selector or {},
+        })
+
+    return result
+
+def get_endpoint_slices(namespace: str = "default"):
+    """
+    Return Kubernetes EndpointSlices in a namespace.
+
+    This function is read-only.
+    """
+    config.load_kube_config()
+
+    discovery_v1 = client.DiscoveryV1Api()
+
+    endpoint_slices = discovery_v1.list_namespaced_endpoint_slice(
+        namespace=namespace,
+    )
+
+    result = []
+
+    for endpoint_slice in endpoint_slices.items:
+        endpoints = []
+
+        for endpoint in endpoint_slice.endpoints:
+            addresses = endpoint.addresses or []
+
+            conditions = endpoint.conditions
+
+            endpoints.append({
+                "addresses": addresses,
+                "ready": conditions.ready,
+                "serving": conditions.serving,
+                "terminating": conditions.terminating,
+                "node_name": endpoint.node_name,
+                "target_ref": (
+                    {
+                        "kind": endpoint.target_ref.kind,
+                        "name": endpoint.target_ref.name,
+                    }
+                    if endpoint.target_ref
+                    else None
+                ),
+            })
+
+        result.append({
+            "name": endpoint_slice.metadata.name,
+            "namespace": endpoint_slice.metadata.namespace,
+            "service_name": (
+                endpoint_slice.metadata.labels or {}
+            ).get("kubernetes.io/service-name"),
+            "address_type": endpoint_slice.address_type,
+            "ports": [
+                {
+                    "name": port.name,
+                    "port": port.port,
+                    "protocol": port.protocol,
+                }
+                for port in (endpoint_slice.ports or [])
+            ],
+            "endpoints": endpoints,
+        })
+
+    return result
+
+def get_service_network_evidence(namespace: str = "default"):
+    """
+    Collect Service and EndpointSlice evidence for a namespace.
+
+    This function is read-only.
+    """
+    services = get_services(namespace)
+    endpoint_slices = get_endpoint_slices(namespace)
+
+    return {
+        "services": services,
+        "endpoint_slices": endpoint_slices,
+    }
+
+def get_ingresses(namespace: str = "default"):
+    """
+    Return Kubernetes Ingress resources in a namespace.
+
+    This function is read-only.
+    """
+    config.load_kube_config()
+
+    networking_v1 = client.NetworkingV1Api()
+
+    ingresses = networking_v1.list_namespaced_ingress(
+        namespace=namespace,
+    )
+
+    result = []
+
+    for ingress in ingresses.items:
+        rules = []
+
+        for rule in (ingress.spec.rules or []):
+            paths = []
+
+            if rule.http:
+                for path in (rule.http.paths or []):
+                    backend = path.backend
+
+                    service = None
+
+                    if backend.service:
+                        service = {
+                            "name": backend.service.name,
+                            "port": (
+                                backend.service.port.number
+                                if backend.service.port.number is not None
+                                else backend.service.port.name
+                            ),
+                        }
+
+                    paths.append({
+                        "path": path.path,
+                        "path_type": path.path_type,
+                        "service": service,
+                    })
+
+            rules.append({
+                "host": rule.host,
+                "paths": paths,
+            })
+
+        result.append({
+            "name": ingress.metadata.name,
+            "namespace": ingress.metadata.namespace,
+            "ingress_class": (
+                ingress.spec.ingress_class_name
+            ),
+            "rules": rules,
+            "load_balancer": [
+                {
+                    "hostname": status.hostname,
+                    "ip": status.ip,
+                }
+                for status in (
+                    ingress.status.load_balancer.ingress or []
+                )
+            ],
+        })
+
+    return result
+
+def get_all_ingresses():
+    """
+    Return Kubernetes Ingress resources across all namespaces.
+
+    This function is read-only.
+    """
+    config.load_kube_config()
+
+    networking_v1 = client.NetworkingV1Api()
+
+    ingresses = networking_v1.list_ingress_for_all_namespaces()
+
+    result = []
+
+    for ingress in ingresses.items:
+        rules = []
+
+        for rule in (ingress.spec.rules or []):
+            paths = []
+
+            if rule.http:
+                for path in (rule.http.paths or []):
+                    backend = path.backend
+
+                    service = None
+
+                    if backend.service:
+                        service = {
+                            "name": backend.service.name,
+                            "port": (
+                                backend.service.port.number
+                                if backend.service.port.number is not None
+                                else backend.service.port.name
+                            ),
+                        }
+
+                    paths.append({
+                        "path": path.path,
+                        "path_type": path.path_type,
+                        "service": service,
+                    })
+
+            rules.append({
+                "host": rule.host,
+                "paths": paths,
+            })
+
+        result.append({
+            "name": ingress.metadata.name,
+            "namespace": ingress.metadata.namespace,
+            "ingress_class": ingress.spec.ingress_class_name,
+            "rules": rules,
+            "load_balancer": [
+                {
+                    "hostname": status.hostname,
+                    "ip": status.ip,
+                }
+                for status in (
+                    ingress.status.load_balancer.ingress or []
+                )
+            ],
+        })
+
+    return result
+
+def find_ingresses_by_hostname(hostname: str):
+    """
+    Find Kubernetes Ingress resources matching a hostname.
+
+    This function is read-only.
+    """
+    ingresses = get_all_ingresses()
+
+    matches = []
+
+    for ingress in ingresses:
+        for rule in ingress.get("rules", []):
+            rule_host = rule.get("host")
+
+            if rule_host == hostname:
+                matches.append({
+                    "ingress": ingress,
+                    "matched_host": rule_host,
+                })
+
+    return matches
+
+def find_service_endpoints(
+    service_name: str,
+    namespace: str,
+):
+    """
+    Find EndpointSlice evidence for a Kubernetes Service.
+
+    This function is read-only.
+    """
+    endpoint_slices = get_endpoint_slices(namespace)
+
+    matches = []
+
+    for endpoint_slice in endpoint_slices:
+        if endpoint_slice.get("service_name") == service_name:
+            matches.append(endpoint_slice)
+
+    return matches
+def get_endpoint_pod_evidence(
+    endpoint_slices: list,
+    namespace: str,
+):
+    """
+    Collect Kubernetes Pod evidence for EndpointSlice targets.
+
+    This function is read-only.
+    """
+    pod_names = []
+
+    for endpoint_slice in endpoint_slices:
+        for endpoint in endpoint_slice.get("endpoints", []):
+            target_ref = endpoint.get("target_ref")
+
+            if (
+                target_ref
+                and target_ref.get("kind") == "Pod"
+                and target_ref.get("name")
+            ):
+                pod_names.append(target_ref["name"])
+
+    pod_names = list(dict.fromkeys(pod_names))
+
+    result = []
+
+    for pod_name in pod_names:
+        pods = get_pods(namespace)
+
+        for pod in pods:
+            if pod.get("name") == pod_name:
+                result.append(pod)
+
+    return result
+
+def investigate_service_network_path(
+    service_name: str,
+    namespace: str,
+):
+    """
+    Collect a read-only snapshot of the Service network path.
+
+    Service -> EndpointSlice -> Pods
+    """
+    endpoint_slices = find_service_endpoints(
+        service_name=service_name,
+        namespace=namespace,
+    )
+
+    pods = get_endpoint_pod_evidence(
+        endpoint_slices=endpoint_slices,
+        namespace=namespace,
+    )
+
+    return {
+        "service_name": service_name,
+        "namespace": namespace,
+        "endpoint_slices": endpoint_slices,
+        "pods": pods,
+    }
+
+def investigate_url_kubernetes_path(
+    hostname: str,
+):
+    """
+    Collect read-only Kubernetes evidence for a URL hostname.
+
+    Hostname -> Ingress -> Service -> EndpointSlice -> Pods
+    """
+    ingress_matches = find_ingresses_by_hostname(hostname)
+
+    result = {
+        "hostname": hostname,
+        "ingresses": [],
+    }
+
+    for match in ingress_matches:
+        ingress = match["ingress"]
+
+        ingress_evidence = {
+            "name": ingress["name"],
+            "namespace": ingress["namespace"],
+            "ingress_class": ingress["ingress_class"],
+            "matched_host": match["matched_host"],
+            "load_balancer": ingress["load_balancer"],
+            "services": [],
+        }
+
+        for rule in ingress["rules"]:
+            if rule["host"] != hostname:
+                continue
+
+            for path in rule["paths"]:
+                service = path.get("service")
+
+                if not service:
+                    continue
+
+                service_name = service["name"]
+                namespace = ingress["namespace"]
+
+                network = investigate_service_network_path(
+                    service_name=service_name,
+                    namespace=namespace,
+                )
+
+                ingress_evidence["services"].append({
+                    "path": path["path"],
+                    "path_type": path["path_type"],
+                    "name": service_name,
+                    "port": service["port"],
+                    "network": network,
+                })
+
+        result["ingresses"].append(ingress_evidence)
+
+    return result
 
 def get_pod_deployment(
     pod_name: str,
