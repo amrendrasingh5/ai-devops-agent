@@ -79,7 +79,7 @@ Hey, check why the pod is not running.
 or:
 
 ```text
-Check pod node-server-xxxx in namespace atgse-web.
+Check pod example-app-xxxx in namespace example-namespace.
 ```
 
 The investigation can collect:
@@ -352,7 +352,7 @@ The agent can identify Kubernetes Ingress resources matching an endpoint hostnam
 For example:
 
 ```text
-https://atgse-web.lab.c1.atg-tech.dev
+https://app.example.com
 ```
 
 can be traced through the Kubernetes resources responsible for serving the hostname.
@@ -590,7 +590,7 @@ Hey, check why the pod is not running.
 ```
 
 ```text
-Check pod node-server-xxxx in namespace atgse-web.
+Check pod example-app-xxxx in namespace example-namespace.
 ```
 
 ```text
